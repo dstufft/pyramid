@@ -37,6 +37,10 @@ from pyramid.traversal import traversal_path_info
 
 slash = text_('/')
 
+
+_compression_suffixes = {".br": "br", "gzip": ".gz"}
+
+
 class static_view(object):
     """ An instance of this class is a callable which can act as a
     :app:`Pyramid` :term:`view callable`; this view will serve
@@ -83,7 +87,8 @@ class static_view(object):
     """
 
     def __init__(self, root_dir, cache_max_age=3600, package_name=None,
-                 use_subpath=False, index='index.html', cachebust_match=None):
+                 use_subpath=False, index='index.html', cachebust_match=None,
+                 precompressed=False):
         # package_name is for bw compat; it is preferred to pass in a
         # package-relative path as root_dir
         # (e.g. ``anotherpackage:foo/static``).
@@ -97,6 +102,7 @@ class static_view(object):
         self.norm_docroot = normcase(normpath(docroot))
         self.index = index
         self.cachebust_match = cachebust_match
+        self.precompressed = precompressed
 
     def __call__(self, context, request):
         if self.use_subpath:
@@ -110,6 +116,13 @@ class static_view(object):
         if path is None:
             raise HTTPNotFound('Out of bounds: %s' % request.url)
 
+        # Look to see if there is an Accept-Encoding on this request, and if
+        # so, if so, if we should serve some pre-compressed files instead.
+        target_encoding = request.accept_encoding.best_match(["br", "gzip"])
+        pre_compression_suffix = None
+        if target_encoding is not None:
+            pre_compression_suffix = _compression_suffixes.get(target_encoding)
+
         if self.package_name: # package resource
             resource_path = '%s/%s' % (self.docroot.rstrip('/'), path)
             if resource_isdir(self.package_name, resource_path):
@@ -121,7 +134,19 @@ class static_view(object):
 
             if not resource_exists(self.package_name, resource_path):
                 raise HTTPNotFound(request.url)
-            filepath = resource_filename(self.package_name, resource_path)
+
+            # Check to see if we have a precompressed file.
+            if (self.precompressed
+                    and pre_compression_suffix
+                    and resource_exists(
+                        self.package_name,
+                        resource_path + pre_compression_suffix)):
+                filepath = resource_filename(
+                    self.package_name,
+                    resource_path + pre_compression_suffix,
+                )
+            else:
+                filepath = resource_filename(self.package_name, resource_path)
 
         else: # filesystem file
 
@@ -133,6 +158,12 @@ class static_view(object):
                 filepath = join(filepath, self.index)
             if not exists(filepath):
                 raise HTTPNotFound(request.url)
+
+            # Check to see if we have a precompressed file.
+            if (self.precompressed
+                    and pre_compression_suffix
+                    and exists(filepath + pre_compression_suffix)):
+                filepath = filepath + pre_compression_suffix
 
         return FileResponse(filepath, request, self.cache_max_age)
 
